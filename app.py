@@ -190,3 +190,33 @@ with tab4:
                     conn.execute("DELETE FROM logs WHERE id=?", (row['id'],))
                 st.rerun()
         st.divider()
+# --- 增量功能 1: 侧边栏导出工具 ---
+with st.sidebar:
+    st.divider()
+    st.header("💾 数据管理")
+    # 导出 Excel
+    if not df_all.empty:
+        csv = df_all.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 导出所有记录为 CSV",
+            data=csv,
+            file_name=f'life_logs_{datetime.now().strftime("%Y%m%d")}.csv',
+            mime='text/csv',
+        )
+    
+    # 随机漫游功能
+    if st.button("🎲 随机唤醒一段记忆"):
+        if not df_all.empty:
+            random_row = df_all.sample(n=1).iloc[0]
+            st.info(f"💡 记得那天吗？\n\n{random_row['date']}\n\n{random_row['content']}")
+            if random_row['image_path'] and os.path.exists(random_row['image_path']):
+                st.image(random_row['image_path'], width=200)
+
+# --- 增量功能 2: 如果你想增加“打卡”Tab，可以修改 Tab 定义 ---
+# 将原有的: tab1, tab2, tab3, tab4 = st.tabs([...])
+# 改为: tab1, tab2, tab3, tab4, tab5 = st.tabs(["✍️ 存根", "🖼️ 展板", "🚀 计划", "📜 往事", "✅ 打卡"])
+
+# 然后在末尾增加 tab5 的内容:
+# with tab5:
+#     st.header("✅ 每日微习惯")
+#     # 此处可以添加简单的打卡复选框逻辑
