@@ -26,7 +26,17 @@ def init_db():
 
 # --- 2. 页面配置 ---
 st.set_page_config(page_title="虚无之镜", layout="wide", page_icon="🕯️")
-init_db()
+def init_db():
+    with get_connection() as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS logs 
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                      date TEXT, category TEXT, content TEXT, 
+                      mood INTEGER, image_path TEXT)''')
+        # 补丁：如果旧表没有 image_path 列，手动加上
+        try:
+            conn.execute('ALTER TABLE logs ADD COLUMN image_path TEXT')
+        except:
+            pass # 如果已经有了，报错就跳过
 
 # 自定义 CSS 样式
 st.markdown("""
