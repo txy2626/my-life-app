@@ -148,4 +148,99 @@ with tab1:
                 st.rerun()
 
 # --- Tab 2: 人生展板 ---
-with tab2
+with tab2:
+    st.header("🖼️ 精选展板")
+    with st.expander("➕ 直接上传照片"):
+        with st.form("gal_up", clear_on_submit=True):
+            g_pic = st.file_uploader("选择照片", type=['jpg','png','jpeg'])
+            g_title = st.text_input("描述")
+            if st.form_submit_button("上传"):
+                if g_pic:
+                    g_path = os.path.join('life_gallery', f"GAL_{datetime.now().timestamp()}.jpg")
+                    with open(g_path, "wb") as f: f.write(g_pic.getbuffer())
+                    sync_to_github(g_path, "Upload Gallery")
+                    with get_connection() as conn:
+                        conn.execute("INSERT INTO gallery (date, title, image_path) VALUES (?,?,?)",
+                                     (datetime.now().strftime('%Y-%m-%d'), g_title, g_path))
+                    sync_to_github(DB_PATH, "Update DB")
+                    st.rerun()
+    st.divider()
+    logs_feat = df_all[df_all['is_featured'] == 1].rename(columns={'content': 'title'})
+    combined = pd.concat([df_gallery, logs_feat[['date', 'title', 'image_path']]], ignore_index=True)
+    combined = combined.sort_values(by='date', ascending=False)
+    if not combined.empty:
+        cols = st.columns(3)
+        for i, row in enumerate(combined.iterrows()):
+            r = row[1]
+            with cols[i % 3]:
+                if r['image_path'] and os.path.exists(r['image_path']):
+                    st.image(r['image_path'], use_container_width=True)
+                    st.caption(f"{r['date']} | {r['title']}")
+
+# --- Tab 3: 人生计划 ---
+with tab3:
+    st.header("🚀 未来蓝图")
+    with st.expander("📝 绘制新计划"):
+        with st.form("plan_form", clear_on_submit=True):
+            p_title = st.text_input("计划标题")
+            p_details = st.text_area("详细步骤")
+            p_pic = st.file_uploader("愿景配图", type=['jpg','png','jpeg'])
+            if st.form_submit_button("开启计划"):
+                if p_title:
+                    p_path = ""
+                    if p_pic:
+                        p_path = os.path.join('life_plans', f"PLAN_{datetime.now().timestamp()}.jpg")
+                        with open(p_path, "wb") as f: f.write(p_pic.getbuffer())
+                        sync_to_github(p_path, "Upload Plan")
+                    with get_connection() as conn:
+                        conn.execute("INSERT INTO plans (date, title, details, image_path) VALUES (?,?,?,?)",
+                                     (datetime.now().strftime('%Y-%m-%d'), p_title, p_details, p_path))
+                    sync_to_github(DB_PATH, "Update DB")
+                    st.rerun()
+    st.divider()
+    if not df_plans.empty:
+        for _, row in df_plans.iterrows():
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                if row['image_path'] and os.path.exists(row['image_path']):
+                    st.image(row['image_path'], use_container_width=True)
+            with c2:
+                st.subheader(row['title'])
+                st.info(row['details'])
+                if st.button("删除计划", key=f"p_del_{row['id']}"):
+                    with get_connection() as conn:
+                        conn.execute("DELETE FROM plans WHERE id=?", (row['id'],))
+                    sync_to_github(DB_PATH, "Delete Plan")
+                    st.rerun()
+            st.divider()
+
+# --- Tab 4: 往事回响 ---
+with tab4:
+    col_s1, col_s2 = st.columns([3, 1])
+    with col_s1:
+        search = st.text_input("🔍 检索内容或日期")
+    with col_s2:
+        st.write("")
+        if st.button("🎲 随机唤醒"):
+            if not df_all.empty:
+                r = df_all.sample(1).iloc[0]
+                st.info(f"💡 那天你写道：\n\n{r['content']}")
+    
+    d_df = df_all.copy()
+    if search:
+        d_df = d_df[(d_df['content'].str.contains(search, na=False)) | (d_df['date'].str.contains(search, na=False))]
+
+    for _, row in d_df.iterrows():
+        c1, c2 = st.columns([1, 4])
+        with c1:
+            if row.get('image_path') and os.path.exists(row['image_path']):
+                st.image(row['image_path'], use_container_width=True)
+        with c2:
+            st.write(f"**{row['date']}** | {row['category']} | {row['mood']}⭐")
+            st.write(row['content'])
+            if st.button("删除记录", key=f"del_{row['id']}"):
+                with get_connection() as conn:
+                    conn.execute("DELETE FROM logs WHERE id=?", (row['id'],))
+                sync_to_github(DB_PATH, "Delete Log")
+                st.rerun()
+        st.divider()
