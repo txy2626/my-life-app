@@ -2,85 +2,149 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
+from datetime import datetime
 
-# --- 1. 数据库基础设置 ---
-# 这会在你的电脑本地创建一个名为 my_life.db 的数据库文件
-db_path = 'my_life.db'
+# --- 1. 初始化设置 ---
+# 创建存储图片的文件夹
+UPLOAD_FOLDER = 'life_images'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# 数据库文件
+DB_PATH = 'my_life.db'
 
 def get_connection():
-    return sqlite3.connect(db_path, check_same_thread=False)
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+# 初始化数据库
 def init_db():
     with get_connection() as conn:
-        # 创建表：包含 ID(主键), 日期, 类别, 内容, 情绪值
         conn.execute('''CREATE TABLE IF NOT EXISTS logs 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      date TEXT, category TEXT, content TEXT, mood INTEGER)''')
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                      date TEXT, category TEXT, content TEXT, 
+                      mood INTEGER, image_path TEXT)''')
 
-# --- 2. 页面初始化 ---
+# --- 2. 页面配置 ---
 st.set_page_config(page_title="虚无之镜", layout="wide", page_icon="🕯️")
 init_db()
 
-st.title("🕯️ 虚无之镜：人生存根")
-st.markdown("这是你存放记忆的私密空间。所有数据均保存在本地。")
+# 自定义 CSS 样式
+st.markdown("""
+    <style>
+    .main { background-color: #f5f5f5; }
+    .stTextArea textarea { font-size: 1.1rem; }
+    .log-card { padding: 20px; border-radius: 10px; border: 1px solid #ddd; margin-bottom: 10px; background-color: white; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- 3. 模块一：新增瞬间 (表单模式) ---
-with st.expander("📝 记录新的瞬间", expanded=True):
+st.title("🕯️ 虚无之镜：人生存根")
+
+# --- 3. 侧边栏：人生进度条与统计 ---
+with st.sidebar:
+    st.header("⏳ 人生画布")
+    birth = st.date_input("你的生日", datetime(2000, 1, 1))
+    expectancy = st.slider("预期寿命", 60, 120, 85)
+    
+    total_days = expectancy * 365
+    lived_days = (datetime.now().date() - birth).days
+    percent = min(lived_days / total_days, 1.0)
+    
+    st.progress(percent)
+    st.write(f"人生进度: {percent:.2%}")
+    st.write(f"已渡过: {lived_days} 天")
+    st.write(f"余额: {max(0, total_days - lived_days)} 天")
+
+# --- 4. 核心功能：记录瞬间 ---
+with st.expander("🖼️ 记录带照片的瞬间", expanded=True):
     with st.form("new_entry", clear_on_submit=True):
-        col1, col2, col3 = st.columns([3, 1, 1])
-        content = col1.text_input("此刻在想什么？", placeholder="写下你的故事...")
-        cate = col2.selectbox("分类", ["日常", "重要里程碑", "灵感", "至暗时刻"])
-        mood = col3.slider("能量(1-10)", 1, 10, 5)
+        col_text, col_meta = st.columns([2, 1])
         
-        if st.form_submit_button("封存"):
+        with col_text:
+            content = st.text_area("此刻在想什么？", height=150, placeholder="输入文字...")
+            uploaded_file = st.file_uploader("上传一张照片 (可选)", type=['png', 'jpg', 'jpeg'])
+            
+        with col_meta:
+            cate = st.selectbox("分类", ["日常", "重要里程碑", "灵感闪现", "至暗时刻", "旅行"])
+            mood = st.select_slider("能量状态", options=range(1, 11), value=5)
+            manual_date = st.date_input("日期 (默认今天)", datetime.now())
+        
+        if st.form_submit_button("封存入库"):
             if content:
-                now = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')
+                # 处理日期和图片
+                timestamp = manual_date.strftime('%Y-%m-%d') + " " + datetime.now().strftime('%H:%M')
+                img_path = ""
+                
+                if uploaded_file is not None:
+                    # 使用时间戳作为文件名防止冲突
+                    filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                    img_path = os.path.join(UPLOAD_FOLDER, filename)
+                    with open(img_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                
+                # 写入数据库
                 with get_connection() as conn:
-                    conn.execute("INSERT INTO logs (date, category, content, mood) VALUES (?,?,?,?)", 
-                                 (now, cate, content, mood))
-                st.success("已存档。")
+                    conn.execute("INSERT INTO logs (date, category, content, mood, image_path) VALUES (?,?,?,?,?)", 
+                                 (timestamp, cate, content, mood, img_path))
+                st.success("这一刻已存档。")
                 st.rerun()
             else:
-                st.error("请输入内容后再提交。")
+                st.error("内容不能为空哦。")
 
-# --- 4. 模块二：往事回响 (可编辑/新增/删除的表格) ---
+# --- 5. 往事回响：展示与编辑 ---
+st.divider()
 st.subheader("📜 往事回响")
-st.caption("💡 技巧：双击内容可直接修改 | 点击表格底部 [+] 可补录往事 | 选中行按 Del 可删除")
 
-# 从数据库读取数据
+# 搜索与筛选
+search_query = st.text_input("🔍 检索往事...")
+
+# 读取数据
 with get_connection() as conn:
-    df = pd.read_sql_query("SELECT * FROM logs ORDER BY date DESC", conn)
+    query = "SELECT * FROM logs ORDER BY date DESC"
+    df = pd.read_sql_query(query, conn)
 
-# 使用 data_editor 实现 Excel 般的交互
-edited_df = st.data_editor(
-    df,
-    column_config={
-        "id": None, # 隐藏内部ID
-        "date": st.column_config.TextColumn("时间线"),
-        "category": st.column_config.SelectboxColumn("分类", options=["日常", "重要里程碑", "灵感", "至暗时刻"]),
-        "content": st.column_config.TextColumn("纪实内容", width="large"),
-        "mood": st.column_config.NumberColumn("能量星级", format="%d ⭐")
-    },
-    num_rows="dynamic", # 允许动态增减行
-    use_container_width=True,
-    key="editor"
-)
+# 过滤逻辑
+if search_query:
+    df = df[df['content'].str.contains(search_query, case=False, na=False)]
 
-# --- 5. 同步保存按钮 ---
-col_save, col_empty = st.columns([1, 4])
-if col_save.button("💾 同步所有变更", type="primary"):
-    with get_connection() as conn:
-        # 清空旧数据，存入编辑后的新数据
-        conn.execute("DELETE FROM logs")
-        edited_df.to_sql('logs', conn, if_exists='append', index=False)
-    st.toast("往事已成功更新！")
-    st.rerun()
-
-# --- 6. 情绪可视化 ---
 if not df.empty:
-    st.divider()
-    st.subheader("📈 人生能量波动")
-    # 将日期设为索引并绘制折线图
-    chart_data = df.copy()
-    chart_data['date'] = pd.to_datetime(chart_data['date'])
-    st.line_chart(chart_data.set_index('date')['mood'])
+    for _, row in df.iterrows():
+        with st.container():
+            # 使用列布局显示卡片
+            c1, c2 = st.columns([1, 3])
+            
+            with c1:
+                if row['image_path'] and os.path.exists(row['image_path']):
+                    st.image(row['image_path'], use_container_width=True)
+                else:
+                    st.caption("📷 纯文字记忆")
+            
+            with c2:
+                # 标题头
+                st.write(f"**{row['date']}** | `{row['category']}` | 能量: {row['mood']}⭐")
+                
+                # 内容编辑区（点击可直接在页面修改）
+                new_content = st.text_area("内容", value=row['content'], key=f"edit_{row['id']}", label_visibility="collapsed")
+                
+                # 操作按钮
+                col_btn1, col_btn2, _ = st.columns([1, 1, 4])
+                if col_btn1.button("更新", key=f"update_{row['id']}"):
+                    with get_connection() as conn:
+                        conn.execute("UPDATE logs SET content=? WHERE id=?", (new_content, row['id']))
+                    st.toast("已修改。")
+                
+                if col_btn2.button("删除", key=f"del_{row['id']}"):
+                    with get_connection() as conn:
+                        conn.execute("DELETE FROM logs WHERE id=?", (row['id'],))
+                        if row['image_path'] and os.path.exists(row['image_path']):
+                            os.remove(row['image_path'])
+                    st.rerun()
+            st.divider()
+            
+    # 数据可视化
+    st.subheader("📊 情绪趋势")
+    chart_df = df.copy()
+    chart_df['date'] = pd.to_datetime(chart_df['date'])
+    st.line_chart(chart_df.set_index('date')['mood'])
+    
+else:
+    st.info("还没有任何记录。开始记录你的第一份存根吧！")
