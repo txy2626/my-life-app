@@ -4,12 +4,34 @@ import sqlite3
 import os
 from datetime import datetime
 import matplotlib.pyplot as plt
+from github import Github
 
-# --- 1. 环境配置与文件夹创建 ---
-folders = ['life_images', 'life_gallery', 'life_plans']
-for folder in folders:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+# --- 1. 基础配置与隐私锁 ---
+st.set_page_config(page_title="虚无之镜", layout="wide", page_icon="🕯️")
+
+def check_password():
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+    if st.session_state["password_correct"]:
+        return True
+
+    st.title("🕯️ 虚无之镜")
+    pwd = st.text_input("唯有持灯者方能进入 (输入密码)", type="password")
+    if st.button("进入"):
+        if pwd == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            st.rerun()
+        else:
+            st.error("🔑 密码错误")
+    return False
+
+if not check_password():
+    st.stop()
+
+# --- 2. 文件夹与数据库初始化 ---
+FOLDERS = ['life_images', 'life_gallery', 'life_plans']
+for f in FOLDERS:
+    if not os.path.exists(f): os.makedirs(f)
 
 DB_PATH = 'my_life.db'
 
@@ -18,82 +40,83 @@ def get_connection():
 
 def init_db():
     with get_connection() as conn:
-        # 记录表
         conn.execute('''CREATE TABLE IF NOT EXISTS logs 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                      date TEXT, category TEXT, content TEXT, 
-                      mood INTEGER, image_path TEXT, is_featured INTEGER DEFAULT 0)''')
-        # 展板表
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, category TEXT, 
+                      content TEXT, mood INTEGER, image_path TEXT, is_featured INTEGER DEFAULT 0)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS gallery 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                      date TEXT, title TEXT, image_path TEXT)''')
-        # 计划表
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, title TEXT, image_path TEXT)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS plans 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                      date TEXT, title TEXT, details TEXT, image_path TEXT)''')
-        
-        # 自动补齐缺失列
-        cursor = conn.execute("PRAGMA table_info(logs)")
-        cols = [c[1] for c in cursor.fetchall()]
-        if 'is_featured' not in cols:
-            conn.execute('ALTER TABLE logs ADD COLUMN is_featured INTEGER DEFAULT 0')
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, title TEXT, details TEXT, image_path TEXT)''')
+        # 补丁：确保旧表兼容
+        try: conn.execute('ALTER TABLE logs ADD COLUMN is_featured INTEGER DEFAULT 0')
+        except: pass
 
-# --- 2. 页面配置与数据读取 ---
-st.set_page_config(page_title="虚无之镜", layout="wide", page_icon="🕯️")
 init_db()
 
+# --- 3. GitHub 自动同步逻辑 ---
+def sync_to_github(file_path, commit_msg):
+    try:
+        g = Github(st.secrets["GITHUB_TOKEN"])
+        repo = g.get_repo(st.secrets["REPO_NAME"])
+        with open(file_path, "rb") as f:
+            content = f.read()
+        
+        # 尝试更新，不存在则创建
+        remote_path = file_path.replace("\\", "/")
+        try:
+            contents = repo.get_contents(remote_path)
+            repo.update_file(remote_path, commit_msg, content, contents.sha)
+        except:
+            repo.create_file(remote_path, commit_msg, content)
+        st.toast(f"☁️ {file_path} 已同步至云端")
+    except Exception as e:
+        st.error(f"同步失败: {e}")
+
+# --- 4. 数据读取 ---
 with get_connection() as conn:
     df_all = pd.read_sql_query("SELECT * FROM logs ORDER BY date DESC", conn)
     df_gallery = pd.read_sql_query("SELECT * FROM gallery ORDER BY date DESC", conn)
     df_plans = pd.read_sql_query("SELECT * FROM plans ORDER BY id DESC", conn)
 
-# --- 3. 侧边栏：人生画布与原生统计 ---
+# --- 5. 侧边栏：画布与统计 ---
 with st.sidebar:
     st.header("⏳ 人生画布")
     birth = st.date_input("你的生日", datetime(2000, 1, 1))
     expectancy = st.slider("预期寿命", 60, 120, 85)
     lived_days = (datetime.now().date() - birth).days
-    total_days = expectancy * 365
-    percent = min(lived_days / total_days, 1.0)
-    st.progress(percent)
-    st.caption(f"已渡过 {lived_days} 天 | 进度: {percent:.2%}")
+    st.progress(min(lived_days / (expectancy * 365), 1.0))
+    st.caption(f"已渡过 {lived_days} 天 | 进度: {lived_days/(expectancy*365):.2%}")
 
     if not df_all.empty:
         st.divider()
         st.header("📊 能量看板")
-        
-        # 心情走势：原生折线图 (第一版形式)
-        st.subheader("心情走势")
+        # 原生折线图 (坐标轴回归第一版)
         chart_df = df_all.copy()
-        chart_df['date'] = pd.to_datetime(chart_df['date'])
-        chart_data = chart_df.groupby(chart_df['date'].dt.date)['mood'].mean()
+        chart_df['date_dt'] = pd.to_datetime(chart_df['date'])
+        chart_data = chart_df.groupby(chart_df['date_dt'].dt.date)['mood'].mean()
         st.line_chart(chart_data)
 
-        # 维度分布：饼图
-        st.subheader("维度占比")
+        # 维度分布 (圆状图)
         cate_counts = df_all['category'].value_counts()
         fig, ax = plt.subplots(figsize=(5,5))
         ax.pie(cate_counts, labels=cate_counts.index, autopct='%1.1f%%', startangle=90)
         fig.patch.set_alpha(0)
         st.pyplot(fig)
 
-st.title("🕯️ 虚无之镜：人生存根")
+# --- 6. 主功能区 ---
+tab1, tab2, tab3, tab4 = st.tabs(["✍️ 记录存根", "🖼️ 人生展板", "🚀 人生计划", "📜 往事回响"])
 
-# --- 4. 核心功能标签页 ---
-tab1, tab2, tab3, tab4 = st.tabs(["✍️ 记录瞬间", "🖼️ 人生展板", "🚀 人生计划", "📜 往事回响"])
-
-# --- Tab 1: 记录瞬间 ---
+# --- Tab 1: 存根 ---
 with tab1:
     with st.form("new_log", clear_on_submit=True):
-        col_a, col_b = st.columns([2,1])
-        with col_a:
-            content = st.text_area("此刻在想什么？", height=150)
-            pic = st.file_uploader("记录配图", type=['jpg','png','jpeg'], key="log_up")
-        with col_b:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            content = st.text_area("记录此刻...", height=150)
+            pic = st.file_uploader("配图", type=['jpg','png','jpeg'])
+        with c2:
             cat = st.selectbox("分类", ["日常", "里程碑", "灵感", "至暗", "旅行"])
             val = st.select_slider("能量", range(1,11), 5)
-            is_feat = st.checkbox("设为展板精选")
-        
+            is_feat = st.checkbox("同步至展板")
         if st.form_submit_button("封存入库"):
             if content:
                 now = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -101,14 +124,17 @@ with tab1:
                 if pic:
                     path = os.path.join('life_images', f"LOG_{datetime.now().timestamp()}.jpg")
                     with open(path, "wb") as f: f.write(pic.getbuffer())
+                    sync_to_github(path, "Upload Log Image") # 同步图片
+                
                 with get_connection() as conn:
                     conn.execute("INSERT INTO logs (date, category, content, mood, image_path, is_featured) VALUES (?,?,?,?,?,?)",
                                  (now, cat, content, val, path, 1 if is_feat else 0))
+                sync_to_github(DB_PATH, "Update Database via Log") # 同步数据库
                 st.rerun()
 
-# --- Tab 2: 人生展板 (支持同步+上传) ---
+# --- Tab 2: 展板 ---
 with tab2:
-    st.header("🖼️ 精选瞬间")
+    st.header("🖼️ 精选展板")
     with st.expander("➕ 直接上传照片至展板"):
         with st.form("gal_up", clear_on_submit=True):
             g_pic = st.file_uploader("选择照片", type=['jpg','png','jpeg'])
@@ -117,9 +143,11 @@ with tab2:
                 if g_pic:
                     g_path = os.path.join('life_gallery', f"GAL_{datetime.now().timestamp()}.jpg")
                     with open(g_path, "wb") as f: f.write(g_pic.getbuffer())
+                    sync_to_github(g_path, "Upload Gallery Image")
                     with get_connection() as conn:
                         conn.execute("INSERT INTO gallery (date, title, image_path) VALUES (?,?,?)",
                                      (datetime.now().strftime('%Y-%m-%d'), g_title, g_path))
+                    sync_to_github(DB_PATH, "Update Database via Gallery")
                     st.rerun()
     st.divider()
     logs_feat = df_all[df_all['is_featured'] == 1].rename(columns={'content': 'title'})
@@ -133,12 +161,12 @@ with tab2:
                 if r['image_path'] and os.path.exists(r['image_path']):
                     st.image(r['image_path'], use_container_width=True)
                     st.caption(f"{r['date']} | {r['title']}")
-    else: st.info("暂无精选内容。")
+    else: st.info("尚无内容")
 
-# --- Tab 3: 人生计划 ---
+# --- Tab 3: 计划 ---
 with tab3:
     st.header("🚀 未来蓝图")
-    with st.expander("📝 绘制新的计划"):
+    with st.expander("📝 绘制新计划"):
         with st.form("plan_form", clear_on_submit=True):
             p_title = st.text_input("计划标题")
             p_details = st.text_area("详细步骤")
@@ -149,34 +177,42 @@ with tab3:
                     if p_pic:
                         p_path = os.path.join('life_plans', f"PLAN_{datetime.now().timestamp()}.jpg")
                         with open(p_path, "wb") as f: f.write(p_pic.getbuffer())
+                        sync_to_github(p_path, "Upload Plan Image")
                     with get_connection() as conn:
                         conn.execute("INSERT INTO plans (date, title, details, image_path) VALUES (?,?,?,?)",
                                      (datetime.now().strftime('%Y-%m-%d'), p_title, p_details, p_path))
+                    sync_to_github(DB_PATH, "Update Database via Plan")
                     st.rerun()
     st.divider()
     if not df_plans.empty:
         for _, row in df_plans.iterrows():
-            with st.container():
-                c1, c2 = st.columns([1, 2])
-                with c1:
-                    if row['image_path'] and os.path.exists(row['image_path']):
-                        st.image(row['image_path'], use_container_width=True)
-                with c2:
-                    st.subheader(row['title'])
-                    st.write(f"📅 启动日期: {row['date']}")
-                    st.info(row['details'])
-                    if st.button("删除计划", key=f"p_del_{row['id']}"):
-                        with get_connection() as conn:
-                            conn.execute("DELETE FROM plans WHERE id=?", (row['id'],))
-                        st.rerun()
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                if row['image_path'] and os.path.exists(row['image_path']):
+                    st.image(row['image_path'], use_container_width=True)
+            with c2:
+                st.subheader(row['title'])
+                st.info(row['details'])
+                if st.button("删除计划", key=f"p_del_{row['id']}"):
+                    with get_connection() as conn:
+                        conn.execute("DELETE FROM plans WHERE id=?", (row['id'],))
+                    sync_to_github(DB_PATH, "Delete Plan")
+                    st.rerun()
             st.divider()
 
-# --- Tab 4: 往事回响 (日期检索) ---
+# --- Tab 4: 往事 (含日期检索与数据管理) ---
 with tab4:
-    search = st.text_input("🔍 检索内容或日期 (例如: 2026-03)")
+    search = st.text_input("🔍 检索内容或日期 (如: 2026-03)")
     d_df = df_all.copy()
     if search:
         d_df = d_df[(d_df['content'].str.contains(search, na=False)) | (d_df['date'].str.contains(search, na=False))]
+    
+    # 随机漫游小彩蛋
+    if st.button("🎲 随机唤醒一段记忆"):
+        if not d_df.empty:
+            random_row = d_df.sample(n=1).iloc[0]
+            st.warning(f"💡 那天你写道：\n\n{random_row['content']}")
+
     for _, row in d_df.iterrows():
         c1, c2 = st.columns([1, 4])
         with c1:
@@ -184,76 +220,16 @@ with tab4:
                 st.image(row['image_path'], use_container_width=True)
         with c2:
             st.write(f"**{row['date']}** | {row['category']} | {row['mood']}⭐")
-            st.info(row['content'])
+            st.write(row['content'])
             if st.button("删除记录", key=f"del_{row['id']}"):
                 with get_connection() as conn:
                     conn.execute("DELETE FROM logs WHERE id=?", (row['id'],))
+                sync_to_github(DB_PATH, "Delete Log")
                 st.rerun()
         st.divider()
-# --- 增量功能 1: 侧边栏导出工具 ---
-with st.sidebar:
+
+    # 数据管理按钮
     st.divider()
-    st.header("💾 数据管理")
-    # 导出 Excel
     if not df_all.empty:
         csv = df_all.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="📥 导出所有记录为 CSV",
-            data=csv,
-            file_name=f'life_logs_{datetime.now().strftime("%Y%m%d")}.csv',
-            mime='text/csv',
-        )
-    
-    # 随机漫游功能
-    if st.button("🎲 随机唤醒一段记忆"):
-        if not df_all.empty:
-            random_row = df_all.sample(n=1).iloc[0]
-            st.info(f"💡 记得那天吗？\n\n{random_row['date']}\n\n{random_row['content']}")
-            if random_row['image_path'] and os.path.exists(random_row['image_path']):
-                st.image(random_row['image_path'], width=200)
-
-# --- 增量功能 2: 如果你想增加“打卡”Tab，可以修改 Tab 定义 ---
-# 将原有的: tab1, tab2, tab3, tab4 = st.tabs([...])
-# 改为: tab1, tab2, tab3, tab4, tab5 = st.tabs(["✍️ 存根", "🖼️ 展板", "🚀 计划", "📜 往事", "✅ 打卡"])
-
-# 然后在末尾增加 tab5 的内容:
-# with tab5:
-#     st.header("✅ 每日微习惯")
-#     # 此处可以添加简单的打卡复选框逻辑
-# --- 增量功能补丁：数据导出与随机漫游 ---
-
-with st.sidebar:
-    st.divider()
-    st.header("💾 存根管理")
-    
-    # 1. 一键导出功能 (非常重要，建议定期操作)
-    if not df_all.empty:
-        # 将数据转换为 CSV 格式
-        csv_data = df_all.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="📥 导出全量数据 (Excel格式)",
-            data=csv_data,
-            file_name=f'life_archive_{datetime.now().strftime("%Y%m%d")}.csv',
-            mime='text/csv',
-        )
-        st.caption("建议每月导出一次，作为永久本地备份。")
-
-    # 2. 随机漫游：打破时间线
-    st.divider()
-    if st.button("🎲 唤醒一段随机记忆"):
-        if not df_all.empty:
-            random_entry = df_all.sample(n=1).iloc[0]
-            st.info(f"✨ 某天，你曾这样记录：\n\n**{random_entry['date']}**\n\n{random_entry['content']}")
-            if random_entry['image_path'] and os.path.exists(random_entry['image_path']):
-                st.image(random_entry['image_path'], use_container_width=True)
-        else:
-            st.warning("镜中尚无记忆。")
-
-# --- 3. 页面底部的版权感 (仪式感) ---
-st.markdown("""
-    <br><br>
-    <div style='text-align: center; color: #888; font-size: 0.8rem;'>
-        🕯️ 虚无之镜 · 个人人生存根系统<br>
-        自 2026 年起，记录不曾虚渡的每一刻
-    </div>
-""", unsafe_allow_html=True)
+        st.download_button("📥 导出全量 CSV 备份", data=csv, file_name='my_life_data.csv')
