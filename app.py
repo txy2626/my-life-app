@@ -220,3 +220,40 @@ with st.sidebar:
 # with tab5:
 #     st.header("✅ 每日微习惯")
 #     # 此处可以添加简单的打卡复选框逻辑
+# --- 增量功能补丁：数据导出与随机漫游 ---
+
+with st.sidebar:
+    st.divider()
+    st.header("💾 存根管理")
+    
+    # 1. 一键导出功能 (非常重要，建议定期操作)
+    if not df_all.empty:
+        # 将数据转换为 CSV 格式
+        csv_data = df_all.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 导出全量数据 (Excel格式)",
+            data=csv_data,
+            file_name=f'life_archive_{datetime.now().strftime("%Y%m%d")}.csv',
+            mime='text/csv',
+        )
+        st.caption("建议每月导出一次，作为永久本地备份。")
+
+    # 2. 随机漫游：打破时间线
+    st.divider()
+    if st.button("🎲 唤醒一段随机记忆"):
+        if not df_all.empty:
+            random_entry = df_all.sample(n=1).iloc[0]
+            st.info(f"✨ 某天，你曾这样记录：\n\n**{random_entry['date']}**\n\n{random_entry['content']}")
+            if random_entry['image_path'] and os.path.exists(random_entry['image_path']):
+                st.image(random_entry['image_path'], use_container_width=True)
+        else:
+            st.warning("镜中尚无记忆。")
+
+# --- 3. 页面底部的版权感 (仪式感) ---
+st.markdown("""
+    <br><br>
+    <div style='text-align: center; color: #888; font-size: 0.8rem;'>
+        🕯️ 虚无之镜 · 个人人生存根系统<br>
+        自 2026 年起，记录不曾虚渡的每一刻
+    </div>
+""", unsafe_allow_html=True)
