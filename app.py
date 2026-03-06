@@ -7,10 +7,8 @@ import matplotlib.pyplot as plt
 
 # --- 1. 基础配置与自修复数据库 ---
 UPLOAD_FOLDER = 'life_images'
-GALLERY_FOLDER = 'life_gallery' # 新增：精选展板文件夹
-for folder in [UPLOAD_FOLDER, GALLERY_FOLDER]:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
 DB_PATH = 'my_life.db'
 
@@ -18,16 +16,22 @@ def get_connection():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def init_db():
+    """全自动修复数据库：检测缺失列并补齐"""
     with get_connection() as conn:
+        # 创建基础表
         conn.execute('''CREATE TABLE IF NOT EXISTS logs 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                      date TEXT, category TEXT, content TEXT, 
-                      mood INTEGER, image_path TEXT, is_featured INTEGER DEFAULT 0)''')
-        # 补丁：确保旧数据库有 is_featured 列（用于展板）
+                      date TEXT, category TEXT, content TEXT, mood INTEGER)''')
+        
+        # 检查并补齐 image_path 和 is_featured 列
         cursor = conn.execute("PRAGMA table_info(logs)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if 'is_featured' not in columns:
+        existing_columns = [column[1] for column in cursor.fetchall()]
+        
+        if 'image_path' not in existing_columns:
+            conn.execute('ALTER TABLE logs ADD COLUMN image_path TEXT DEFAULT ""')
+        if 'is_featured' not in existing_columns:
             conn.execute('ALTER TABLE logs ADD COLUMN is_featured INTEGER DEFAULT 0')
+        conn.commit()
 
 # --- 2. 页面设置 ---
 st.set_page_config(page_title="虚无之镜", layout="wide", page_icon="🕯️")
@@ -43,38 +47,39 @@ with st.sidebar:
     birth = st.date_input("你的生日", datetime(2000, 1, 1))
     expectancy = st.slider("预期寿命", 60, 120, 85)
     lived_days = (datetime.now().date() - birth).days
-    percent = min(lived_days / (expectancy * 365), 1.0)
+    total_days = expectancy * 365
+    percent = min(lived_days / total_days, 1.0)
     st.progress(percent)
-    st.caption(f"进度: {percent:.2%}")
+    st.caption(f"已渡过 {lived_days} 天 | 进度: {percent:.2%}")
 
     if not df_all.empty:
         st.divider()
         st.header("📊 能量看板")
         
-        # 统计图表 1：饼图 (维度分布)
-        st.subheader("维度比例")
-        cate_counts = df_all['category'].value_counts()
-        fig1, ax1 = plt.subplots()
-        ax1.pie(cate_counts, labels=cate_counts.index, autopct='%1.1f%%', startangle=90, textprops={'color':"grey"})
-        ax1.axis('equal')
-        fig1.patch.set_alpha(0) # 背景透明
-        st.pyplot(fig1)
+        # 饼图
+        try:
+            cate_counts = df_all['category'].value_counts()
+            fig1, ax1 = plt.subplots(figsize=(5,5))
+            ax1.pie(cate_counts, labels=cate_counts.index, autopct='%1.1f%%', startangle=90)
+            fig1.patch.set_alpha(0)
+            st.pyplot(fig1)
+        except: st.write("数据不足以生成比例图")
 
-        # 统计图表 2：趋势图 (日均能量)
-        st.subheader("情绪趋势")
-        df_all['only_date'] = pd.to_datetime(df_all['date'].str.split(' ').str[0])
-        trend_data = df_all.groupby('only_date')['mood'].mean().sort_index()
-        fig2, ax2 = plt.subplots()
-        ax2.plot(trend_data.index, trend_data.values, marker='o', linestyle='-', color='#FF4B4B')
-        ax2.set_ylabel("Mood Level")
-        plt.xticks(rotation=45)
-        fig2.patch.set_alpha(0)
-        st.pyplot(fig2)
+        # 趋势图
+        try:
+            df_trend = df_all.copy()
+            df_trend['only_date'] = pd.to_datetime(df_trend['date'].str.split(' ').str[0])
+            trend_data = df_trend.groupby('only_date')['mood'].mean().sort_index()
+            fig2, ax2 = plt.subplots(figsize=(5,3))
+            ax2.plot(trend_data.index, trend_data.values, marker='o', color='#FF4B4B')
+            plt.xticks(rotation=45)
+            fig2.patch.set_alpha(0)
+            st.pyplot(fig2)
+        except: st.write("数据不足以生成趋势图")
 
 # --- 4. 核心功能区 ---
 tab1, tab2, tab3 = st.tabs(["✍️ 记录瞬间", "🖼️ 人生展板", "📜 往事回响"])
 
-# --- Tab 1: 记录 ---
 with tab1:
     with st.form("new_entry", clear_on_submit=True):
         c1, c2 = st.columns([2, 1])
@@ -85,7 +90,7 @@ with tab1:
             cate = st.selectbox("分类", ["日常", "重要里程碑", "灵感闪现", "至暗时刻", "旅行"])
             mood = st.select_slider("能量", options=range(1, 11), value=5)
             manual_date = st.date_input("日期", datetime.now())
-            is_featured = st.checkbox("设为展板精选 (大图展示)")
+            is_feat = st.checkbox("设为展板精选")
         
         if st.form_submit_button("封存入库"):
             if content:
@@ -98,36 +103,28 @@ with tab1:
                 
                 with get_connection() as conn:
                     conn.execute("INSERT INTO logs (date, category, content, mood, image_path, is_featured) VALUES (?,?,?,?,?,?)", 
-                                 (timestamp, cate, content, mood, img_path, 1 if is_featured else 0))
+                                 (timestamp, cate, content, mood, img_path, 1 if is_feat else 0))
                 st.success("已存档。")
                 st.rerun()
 
-# --- Tab 2: 人生展板 (精选集) ---
 with tab2:
     st.header("🖼️ 人生精选展板")
     featured_df = df_all[df_all['is_featured'] == 1]
     if not featured_df.empty:
-        # 采用网格布局显示大图
         cols = st.columns(3)
         for idx, (_, row) in enumerate(featured_df.iterrows()):
             with cols[idx % 3]:
-                if row['image_path'] and os.path.exists(row['image_path']):
-                    st.image(row['image_path'], use_container_width=True, caption=row['date'])
-                else:
-                    st.warning(f"ID:{row['id']} 记录被设为精选但无图片")
-                st.write(f"> {row['content'][:50]}...")
+                if row.get('image_path') and os.path.exists(row['image_path']):
+                    st.image(row['image_path'], use_container_width=True)
+                st.caption(f"{row['date']} | {row['content'][:30]}...")
     else:
-        st.info("尚未勾选任何“精选”记录。在记录时勾选“设为展板精选”即可在此展示。")
+        st.info("勾选记录中的“精选”即可在此展示。")
 
-# --- Tab 3: 往事回响 (含日期检索) ---
 with tab3:
-    search_query = st.text_input("🔍 检索内容或日期 (如: 2024-05)")
+    search = st.text_input("🔍 检索内容或日期")
     display_df = df_all.copy()
-    if search_query:
-        display_df = display_df[
-            (display_df['content'].str.contains(search_query, case=False, na=False)) |
-            (display_df['date'].str.contains(search_query, case=False, na=False))
-        ]
+    if search:
+        display_df = display_df[(display_df['content'].str.contains(search, na=False)) | (display_df['date'].str.contains(search, na=False))]
 
     for _, row in display_df.iterrows():
         with st.container():
@@ -136,21 +133,10 @@ with tab3:
                 if row.get('image_path') and os.path.exists(row['image_path']):
                     st.image(row['image_path'], use_container_width=True)
             with col2:
-                st.write(f"**{row['date']}** | `{row['category']}` | 能量: {row['mood']}⭐")
-                new_text = st.text_area("编辑", value=row['content'], key=f"ed_{row['id']}", label_visibility="collapsed")
-                b1, b2, b3, _ = st.columns([1, 1, 2, 6])
-                if b1.button("更新", key=f"u_{row['id']}"):
-                    with get_connection() as conn:
-                        conn.execute("UPDATE logs SET content=? WHERE id=?", (new_text, row['id']))
-                    st.toast("已保存")
-                if b2.button("删除", key=f"d_{row['id']}"):
+                st.write(f"**{row['date']}** | {row['category']} | 能量: {row['mood']}⭐")
+                st.info(row['content'])
+                if st.button("删除记录", key=f"del_{row['id']}"):
                     with get_connection() as conn:
                         conn.execute("DELETE FROM logs WHERE id=?", (row['id'],))
-                    st.rerun()
-                # 快速切换精选状态
-                current_feat = "⭐ 取消精选" if row['is_featured'] else "🌟 设为精选"
-                if b3.button(current_feat, key=f"feat_{row['id']}"):
-                    with get_connection() as conn:
-                        conn.execute("UPDATE logs SET is_featured=? WHERE id=?", (0 if row['is_featured'] else 1, row['id']))
                     st.rerun()
             st.divider()
